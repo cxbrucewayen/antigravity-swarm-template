@@ -1,0 +1,14 @@
+{
+  "lead-planner": {
+    "allow": ["work/plan/**", ".my-swarm/**"],
+    "deny": ["work/deliverables/**"]
+  },
+  "producer": {
+    "allow": ["work/drafts/**", "work/deliverables/**"],
+    "deny": ["work/reviews/**", ".my-swarm/**"]
+  },
+  "auditor": {
+    "allow": ["work/reviews/**"],
+    "deny": ["work/drafts/**", "work/deliverables/**"]
+  }
+}
