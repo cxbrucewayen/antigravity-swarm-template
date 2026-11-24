@@ -24,7 +24,8 @@ description: >-
    - **一致性（Consistency）**：跨章节/跨分片的术语、数据口径和结论是否自洽。
    - **可用性与格式（Format & Actionability）**：是否符合目标受众和交付格式契约。
 3. 将结构化报告写入 `work/reviews/audit-report.md`，并在看板按结论流转：
-   - **存在阻断缺陷**：输出 `VERDICT: REVISE`，`@对应producer`（如 `@producer-1`）精准打回返工，等待复验。
+   - **存在阻断缺陷（未满 3 轮）**：输出 `VERDICT: REVISE`，`@对应producer`（如 `@producer-1`）精准打回返工，等待复验。
+   - **3-Strike 熔断（已满 3 轮）**：若同一分片连续 3 轮仍未达标，禁止第 4 次打回，立即发帖 `@coordinator [escalate]` 上报核心瓶颈由总控裁决。
    - **全部达标**：输出 `VERDICT: PASS`，`@coordinator [done]` 汇报核验通过并附上最终报告路径。
 
 ## 交付自检（Stop 门禁核验项）

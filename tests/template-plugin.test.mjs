@@ -387,3 +387,220 @@ test('8. Validator rejects Antigravity spec violations (unknown fields, frontmat
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('9. Coordinator immunity: Coordinator loading orchestrator SKILL.md and briefing @lead-planner is NEVER misidentified as a worker', () => {
+  const tmp = makeTmpDir('agy-coord-');
+  const stateDir = path.join(tmp, 'plugin-data');
+  fs.mkdirSync(path.join(tmp, '.my-swarm'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, '.my-swarm', 'ownership.json'),
+    JSON.stringify({
+      'lead-planner': { allow: ['work/plan/**'], deny: ['work/deliverables/**'] },
+    })
+  );
+
+  const coordTranscript = path.join(tmp, 'coordinator.jsonl');
+  fs.writeFileSync(
+    coordTranscript,
+    [
+      JSON.stringify({ type: 'USER_INPUT', content: '/swarm 启动 my-swarm 团队完成任务' }),
+      JSON.stringify({
+        type: 'TOOL_CALL',
+        tool_calls: [{ name: 'read_file', args: { Path: path.join(PLUGIN_DIR, 'skills', 'my-swarm', 'SKILL.md') } }],
+      }),
+      JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        content: '已拉起 @lead-planner [swarm:my-swarm] 负责规划。',
+      }),
+    ].join('\n') + '\n'
+  );
+
+  const out = runNodeHook(
+    PRE_TOOL_HOOK,
+    {
+      conversationId: 'conv-coord-main',
+      transcriptPath: coordTranscript,
+      cwd: tmp,
+      toolCall: { name: 'write_file', args: { Path: path.join(tmp, 'work', 'deliverables', 'final-summary.md') } },
+    },
+    { PLUGIN_ROOT: PLUGIN_DIR, PLUGIN_DATA: stateDir }
+  );
+  assert.equal(out.decision, 'allow');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('10. Multi-turn Stop gate: retains loadedSkill across swarm_wait wakeups and inspects post_message board verdicts', () => {
+  const tmp = makeTmpDir('agy-multiturn-');
+  const stateDir = path.join(tmp, 'plugin-data');
+  const env = { PLUGIN_ROOT: PLUGIN_DIR, PLUGIN_DATA: stateDir };
+  const slug = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'plugin.json'), 'utf8')).name;
+
+  const transcript = path.join(tmp, 'auditor-multiturn.jsonl');
+  // Turn 1: reads verifier SKILL.md, posts VERDICT: REVISE, parks via swarm_wait.
+  // Turn 2: wakes up, does NOT re-read SKILL.md, finishes without VERDICT -> MUST STILL BLOCK!
+  const turn1AndBadTurn2 = [
+    JSON.stringify({ type: 'USER_INPUT', content: `@auditor [swarm:${slug}] review deliverables` }),
+    JSON.stringify({
+      type: 'TOOL_CALL',
+      tool_calls: [{ name: 'read_file', args: { Path: `/plugins/${slug}/skills/${slug}-verifier/SKILL.md` } }],
+    }),
+    JSON.stringify({
+      type: 'TOOL_CALL',
+      tool_calls: [{ name: 'post_message', args: { text: '@producer-1 VERDICT: REVISE — fix section 2' } }],
+    }),
+    JSON.stringify({
+      type: 'TOOL_CALL',
+      tool_calls: [{ name: 'swarm_wait', args: { since: 5, mentions_only: true } }],
+    }),
+    JSON.stringify({ type: 'TOOL_RESPONSE', content: '#8 @auditor revised section 2' }),
+    JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'Re-checked section 2, looks good now!' }),
+  ];
+  fs.writeFileSync(transcript, turn1AndBadTurn2.join('\n') + '\n');
+
+  const blockedTurn2 = runNodeHook(
+    STOP_HOOK,
+    {
+      conversationId: 'conv-multi-1',
+      transcriptPath: transcript,
+      terminationReason: 'NO_TOOL_CALL',
+      fullyIdle: true,
+      continuationActive: false,
+    },
+    env
+  );
+  assert.equal(blockedTurn2.decision, 'continue');
+  assert.match(blockedTurn2.reason, /VERDICT: PASS/);
+
+  // Turn 3: wakes from another swarm_wait and delivers VERDICT: PASS inside `post_message` tool args
+  const turn3PassViaBoard = [
+    ...turn1AndBadTurn2,
+    JSON.stringify({
+      type: 'TOOL_CALL',
+      tool_calls: [{ name: 'swarm_wait', args: { since: 9, mentions_only: true } }],
+    }),
+    JSON.stringify({ type: 'TOOL_RESPONSE', content: '#11 @auditor final check' }),
+    JSON.stringify({
+      type: 'TOOL_CALL',
+      tool_calls: [
+        {
+          name: 'post_message',
+          args: { text: '@coordinator [done] VERDICT: PASS — audit report at work/reviews/audit-report.md' },
+        },
+      ],
+    }),
+    JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'Posted final approval to the swarm board.' }),
+  ];
+  fs.writeFileSync(transcript, turn3PassViaBoard.join('\n') + '\n');
+
+  const passedTurn3 = runNodeHook(
+    STOP_HOOK,
+    {
+      conversationId: 'conv-multi-1',
+      transcriptPath: transcript,
+      terminationReason: 'NO_TOOL_CALL',
+      fullyIdle: true,
+      continuationActive: false,
+    },
+    env
+  );
+  assert.deepEqual(passedTurn3, {});
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('11. Anti-hallucination filesystem verification: planner claiming PLAN_STATUS: READY without writing ownership.json on disk is caught', () => {
+  const tmp = makeTmpDir('agy-fscheck-');
+  const stateDir = path.join(tmp, 'plugin-data');
+  const env = { PLUGIN_ROOT: PLUGIN_DIR, PLUGIN_DATA: stateDir };
+  const slug = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'plugin.json'), 'utf8')).name;
+
+  const plannerTranscript = path.join(tmp, 'planner.jsonl');
+  fs.writeFileSync(
+    plannerTranscript,
+    [
+      JSON.stringify({ type: 'USER_INPUT', content: `@lead-planner [swarm:${slug}] plan task` }),
+      JSON.stringify({
+        type: 'TOOL_CALL',
+        tool_calls: [{ name: 'read_file', args: { Path: `/plugins/${slug}/skills/${slug}-planner/SKILL.md` } }],
+      }),
+      JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        content: `PLAN_STATUS: READY\nCreated work/plan/spec.md and .${slug}/ownership.json`,
+      }),
+    ].join('\n') + '\n'
+  );
+
+  // Files do NOT exist in `tmp` yet -> blocked!
+  const hallucinated = runNodeHook(
+    STOP_HOOK,
+    {
+      conversationId: 'conv-planner-halluc',
+      transcriptPath: plannerTranscript,
+      cwd: tmp,
+      terminationReason: 'NO_TOOL_CALL',
+      fullyIdle: true,
+      continuationActive: false,
+    },
+    env
+  );
+  assert.equal(hallucinated.decision, 'continue');
+  assert.match(hallucinated.reason, /not found on disk/);
+
+  // Now actually write work/plan/spec.md and .<slug>/ownership.json -> passes on fresh conversation!
+  fs.mkdirSync(path.join(tmp, 'work', 'plan'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'work', 'plan', 'spec.md'), '# Spec\n');
+  fs.mkdirSync(path.join(tmp, `.${slug}`), { recursive: true });
+  fs.writeFileSync(path.join(tmp, `.${slug}`, 'ownership.json'), '{}');
+
+  const verified = runNodeHook(
+    STOP_HOOK,
+    {
+      conversationId: 'conv-planner-real',
+      transcriptPath: plannerTranscript,
+      cwd: tmp,
+      terminationReason: 'NO_TOOL_CALL',
+      fullyIdle: true,
+      continuationActive: false,
+    },
+    env
+  );
+  assert.deepEqual(verified, {});
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('12. Scaffold supports --force into pre-initialized Git repos and strips accidental antigravity- prefix', () => {
+  if (process.env.SWARM_NESTED_TEST === '1') return;
+  const tmp = makeTmpDir('agy-force-scaffold-');
+  const existingRepo = path.join(tmp, 'antigravity-demo-domain-swarm');
+  fs.mkdirSync(path.join(existingRepo, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(existingRepo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  fs.writeFileSync(path.join(existingRepo, 'README.md'), '# Placeholder\n');
+
+  const res = scaffoldSwarm({
+    sourceRoot: REPO_ROOT,
+    targetRoot: existingRepo,
+    slug: 'antigravity-demo-domain-swarm',
+    title: 'Demo Domain Swarm',
+    domain: 'demo domain tasks',
+    force: true,
+  });
+
+  assert.equal(res.slug, 'demo-domain-swarm');
+  assert.equal(res.validation.ok, true);
+  assert.equal(fs.existsSync(path.join(existingRepo, '.git', 'HEAD')), true);
+  const pkg = JSON.parse(fs.readFileSync(path.join(existingRepo, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, 'antigravity-demo-domain-swarm');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('13. Orchestrator SKILL.md and brief templates include open_board, title, 3-Strike breaker, and Screenshot protocol', () => {
+  const slug = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'plugin.json'), 'utf8')).name;
+  const orchMd = fs.readFileSync(path.join(PLUGIN_DIR, 'skills', slug, 'SKILL.md'), 'utf8');
+  const briefsMd = fs.readFileSync(path.join(PLUGIN_DIR, 'skills', slug, 'references', 'brief-templates.md'), 'utf8');
+
+  assert.match(orchMd, /open_board/);
+  assert.match(orchMd, /action:\s*"title"/);
+  assert.match(orchMd, /3-Strike/);
+  assert.match(orchMd, /Screenshot:/);
+  assert.match(briefsMd, /\[escalate\]/);
+  assert.match(briefsMd, /Screenshot:/);
+});

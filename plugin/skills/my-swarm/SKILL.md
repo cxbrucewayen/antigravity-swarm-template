@@ -18,9 +18,12 @@ description: >-
 ## 一、原生 `/swarm` 协议铁律（所有领域通用）
 
 1. **绝不擅自启动 `/swarm`**：只有在用户显式通过 `/swarm` 启动会话时才调用 `swarm` 工具；若任务属于固定批量流水线且无需角色间反复协商打回，优先考虑 `run_workflow` 而非 `/swarm`。
-2. **首轮同步驱动 Overview UI**：
-   - 在调用首批 `swarm{action:"add"}` 前，先阅读内置 `swarm_pane` 技能并维护 `<appData>/brain/<conversation-id>/.system_generated/swarm/plan.json`，让 Swarm Overview 面板展示目标、工作分组与进度。
-   - 若技能列表中有 `swarm_monitor`，拉起一个 `monitor`（不要默认拉起 `narrator`，除非用户点名）。
+2. **首轮启动四件套（Title + Workers + Overview UI + `open_board`）**：
+   - 先调用 `swarm{action:"title", title:"<简明任务标题>"}` 为本次 Swarm 命名。
+   - 阅读内置 `swarm_pane` 技能，在拉起首批 Worker 后立即写入 `<appData>/brain/<conversation-id>/.system_generated/swarm/plan.json`（含 `goal`、`tasks`、`threads`），驱动右侧 Swarm Overview 面板展示实时分组进度。
+   - 若技能列表中有 `swarm_monitor`，同步拉起一个 `monitor`（不要默认拉起 `narrator`，除非用户点名）。
+   - **视觉时间线联动（适用于作图 / 分镜 / UI 等可视化任务）**：通知产出预览图的 Worker 将图片存放在其自身的 `<appData>/brain/<worker-conversation-id>/` 目录下，并在看板发帖单起一行附 `Screenshot: <绝对路径> | <10字内改动说明>`，Overview 面板会自动渲染演化时间线（纯文本/数据任务跳过此项）。
+   - **透传 `open_board` 卡片**：首轮回复用户的最末尾一行，**必须原样输出**最新一次 `swarm{action:"add"}` 或 `status` 返回的 `open_board` 字符串（切勿手写看板链接），随后立即结束本轮回合（`post_message`/`read_board`/`swarm_wait` 会在下一轮自动挂载）。
 3. **Worker 创建与命名规范（多 Swarm 防冲突）**：
    - `name` 必须小写、字母或数字开头、最多 24 字符（`a-z0-9-_`），禁止使用 `all`、`coordinator`、`coordinator-*`。
    - **避免与其它全局插件撞名**：例如全局已装 `gstack-swarm` 时，其全局钩子会拦截 `pm-*`、`qa-*`、`reviewer*` 写源码；本模板默认使用清晰且不易碰撞的领域岗位名（如 `lead-planner`、`producer`、`auditor`），或加领域前缀（如 `res-planner`、`res-analyst`、`res-auditor`）。
@@ -33,8 +36,9 @@ description: >-
 5. **按需选择 `workspace` 隔离模式**：
    - 文档/调研/分析/运营/内容创作等按目录隔离的协作：保持默认 `workspace: "inherit"`，由 `.my-swarm/ownership.json` 钩子锁死各岗位写目录即可。
    - 仅当多个 Worker 必须**并发修改同一 Git 仓库代码并运行构建测试**时，才使用 `workspace: "share"`（共享对象库独立工作副本）或 `workspace: "branch"`；且在 `swarm{action:"kill"}` 前务必先合回改动（`kill` 会永久删除其工作副本）。
-6. **事件驱动与优雅收尾**：
-   - 首轮 `add` 完首批 Worker 后立即结束回合，等待看板消息自动唤醒，**禁止轮询**。
+6. **事件驱动、3-Strike 返工熔断与优雅收尾**：
+   - 首轮 `add` 完首批 Worker 并输出 `open_board` 后立即结束回合，等待看板消息自动唤醒，**禁止轮询**。
+   - **3-Strike 返工熔断机制（`MAX_REVISION_ROUNDS = 3`）**：`@producer` 与 `@auditor` 针对同一分片的打回修改最多不超过 **3 轮**；若第 3 轮复审仍未通过，`@auditor` 严禁发起第 4 轮死磕，必须发送 `@coordinator [escalate]` 附分歧焦点由总控或人类拍板，防止无限循环耗尽配额。
    - 看板传参坚持“**文件路径 + 3~5 行摘要 + `#seq` 引用**”，禁止把几千字大段正文直接粘贴进看板消息。
    - 全部验收通过并汇总前，在看板发一条**不含任何 `@`** 的 `[done] <最终总结>` 让 `monitor` 休眠，并清理本会话临时锁。
 

@@ -1,6 +1,6 @@
 {
   "name": "antigravity-swarm-template",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Production-ready starter template for building domain-specific multi-agent /swarm plugins on Google Antigravity 2.0 with coexistence-safe rules, scoped ownership hooks, and delivery contract gates.",
   "type": "module",
   "license": "MIT",

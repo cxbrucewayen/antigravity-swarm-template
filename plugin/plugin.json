@@ -1,7 +1,7 @@
 {
   "name": "my-swarm",
   "displayName": "My Domain Swarm (Antigravity Template)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reusable starter template for building domain-specific multi-agent /swarm plugins on Google Antigravity 2.0 with coexistence-safe rules, scoped file-ownership hooks, and delivery contract gates.",
   "logo": "assets/logo.svg",
   "author": {

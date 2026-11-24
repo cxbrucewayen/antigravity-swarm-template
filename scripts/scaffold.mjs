@@ -56,9 +56,10 @@ function replaceInTree(dir, replacer, isTop = true) {
   }
 }
 
-export function scaffoldSwarm({ sourceRoot, targetRoot, slug, title, domain, author, repoUrl }) {
-  if (!slug || !/^[a-z0-9][a-z0-9-]{1,30}$/.test(slug)) {
-    throw new Error(`Invalid --slug "${slug}". Must be lowercase kebab-case (2-31 chars, e.g. "research-swarm").`);
+export function scaffoldSwarm({ sourceRoot, targetRoot, slug: rawSlug, title, domain, author, repoUrl, force = false }) {
+  const slug = String(rawSlug || '').trim().replace(/^antigravity-/i, '');
+  if (!slug || !/^[a-z0-9][a-z0-9-]{1,40}$/.test(slug)) {
+    throw new Error(`Invalid --slug "${rawSlug}". Must be lowercase kebab-case (2-41 chars, e.g. "research-swarm").`);
   }
   const resolvedSource = path.resolve(sourceRoot);
   const resolvedTarget = path.resolve(targetRoot);
@@ -78,8 +79,11 @@ export function scaffoldSwarm({ sourceRoot, targetRoot, slug, title, domain, aut
   const domainDesc = domain || `${displayTitle} workflows`;
 
   if (resolvedSource !== resolvedTarget) {
-    if (fs.existsSync(resolvedTarget) && fs.readdirSync(resolvedTarget).length > 0) {
-      throw new Error(`Target directory already exists and is not empty: ${resolvedTarget}`);
+    if (fs.existsSync(resolvedTarget) && !force) {
+      const nonGitEntries = fs.readdirSync(resolvedTarget).filter((n) => n !== '.git');
+      if (nonGitEntries.length > 0) {
+        throw new Error(`Target directory already exists and is not empty: ${resolvedTarget} (pass --force to populate an existing repo).`);
+      }
     }
     copyTree(resolvedSource, resolvedTarget);
   }
@@ -157,6 +161,7 @@ if (isMain) {
   npm run scaffold -- --slug <kebab-slug> --title "<Display Name>" --domain "<keywords>" --in-place
 
 Optional flags:
+  --force                  Populate an existing repository directory (preserves .git)
   --author <github-handle>
   --repo <https://github.com/you/your-repo>`);
     process.exit(args.help ? 0 : 2);
@@ -171,6 +176,7 @@ Optional flags:
     domain: args.domain ? String(args.domain) : undefined,
     author: args.author ? String(args.author) : undefined,
     repoUrl: args.repo ? String(args.repo) : undefined,
+    force: Boolean(args.force),
   });
   console.log(`SUCCESS! Generated Antigravity Swarm plugin "${res.slug}" (${res.displayTitle}) at:\n  ${res.targetRoot}`);
   console.log('\nNext steps:');

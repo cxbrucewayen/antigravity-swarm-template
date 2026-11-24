@@ -155,11 +155,53 @@ export function transcriptMatchesThisPlugin(head, slug = pluginSlug()) {
 }
 
 /**
- * Extracts Antigravity `/swarm` worker roster name from the start of `transcript.jsonl`.
- * Results are cached per conversationId once detected (or once transcript exceeds 4 KB).
+ * Checks whether a transcript belongs to the Swarm Coordinator rather than a spawned worker.
+ * Coordinators either start from a `/swarm` user command, receive `# You are the swarm coordinator`,
+ * or load the top-level orchestrator skill `skills/<slug>/SKILL.md` (no `-role` suffix).
+ */
+export function isCoordinatorTranscript(head, slug = pluginSlug()) {
+  if (!head) return false;
+  const escaped = escapeRegExp(slug);
+  const orchSkillRe = new RegExp(`[/\\\\]skills[/\\\\]${escaped}[/\\\\]SKILL\\.md`, 'i');
+  if (orchSkillRe.test(head)) return true;
+  if (/# You are the swarm coordinator|[/\\\\]native_swarm[/\\\\]SKILL\.md/i.test(head)) return true;
+  return false;
+}
+
+function extractFirstInputContent(head) {
+  const lines = head.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('{')) {
+      try {
+        const obj = JSON.parse(trimmed);
+        if (obj?.type === 'USER_INPUT' && typeof obj.content === 'string') {
+          return obj.content;
+        }
+        if (typeof obj?.content === 'string' && obj.content.trim()) {
+          return obj.content;
+        }
+      } catch {
+        /* partial trailing line or non-JSON */
+      }
+    } else {
+      return head;
+    }
+  }
+  return '';
+}
+
+/**
+ * Extracts Antigravity `/swarm` worker roster name strictly from the worker's initial message
+ * in `transcript.jsonl`, while guaranteeing the Swarm Coordinator is NEVER misclassified as a worker.
  */
 export function detectSwarmWorkerRole(conversationId, transcriptPath, preloadedHead = null) {
   if (!conversationId || !transcriptPath || !fs.existsSync(transcriptPath)) return null;
+  const head = preloadedHead ?? readTranscriptHead(transcriptPath);
+  if (!head) return null;
+
+  const slug = pluginSlug();
   const cacheFile = path.join(locksDir(), '.role-cache.json');
   let cache = {};
   try {
@@ -167,14 +209,35 @@ export function detectSwarmWorkerRole(conversationId, transcriptPath, preloadedH
   } catch {
     cache = {};
   }
+
+  // Coordinator safeguard always wins (even if an earlier partial step preceded reading SKILL.md)
+  if (isCoordinatorTranscript(head, slug)) {
+    if (cache[conversationId] !== null) {
+      cache[conversationId] = null;
+      try {
+        fs.writeFileSync(cacheFile, JSON.stringify(cache));
+      } catch {
+        /* ignore */
+      }
+    }
+    return null;
+  }
+
   if (Object.hasOwn(cache, conversationId)) return cache[conversationId];
 
-  const head = preloadedHead ?? readTranscriptHead(transcriptPath);
-  if (!head) return null;
+  const firstContent = extractFirstInputContent(head);
+  if (/^\s*(?:<[^>]+>\s*)*\/swarm\b/i.test(firstContent)) {
+    cache[conversationId] = null;
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify(cache));
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
 
   let detected = null;
-  const slug = pluginSlug();
-  const m = /(?:^|\n|"content"\s*:\s*"[^"]*?)@([a-z0-9][a-z0-9_-]{1,23})\b/i.exec(head);
+  const m = /(?:^|\n)\s*(?:<[^>]+>\s*)*@([a-z0-9][a-z0-9_-]{1,23})\b/i.exec(firstContent);
   if (m) {
     const candidate = m[1].toLowerCase();
     if (!['coordinator', 'all', 'narrator', 'monitor'].includes(candidate)) {
